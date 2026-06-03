@@ -6,7 +6,7 @@
     text-align: center;
 }
 
-/* עיצוב כפתור הפתיחה */
+/* Toggle button styling */
 .show-list-btn {
     padding: 14px 24px;
     background: linear-gradient(135deg, #6d5efd, #3b82f6);
@@ -26,11 +26,11 @@
     box-shadow: 0 6px 20px rgba(109, 94, 253, 0.4);
 }
 
-/* מיכל הרשימה עם אנימציה */
+/* List container with animation */
 .shopping-list-content {
     background: linear-gradient(135deg, #6d5efd, #3b82f6);
     border-radius: 20px;
-    padding: 0; /* מתחיל ב-0 כדי שלא יראו פדינג כשהוא סגור */
+    padding: 0; /* start at 0 so padding is hidden when collapsed */
     box-shadow: 0 15px 40px rgba(0,0,0,0.25);
     color: #fff;
     margin-top: 20px;
@@ -41,12 +41,12 @@
     opacity: 0;
 }
 
-/* מצב גלוי - הפתרון לבעיית ה-Edit Box */
+/* Expanded state — fixes edit box clipping */
 .shopping-list-content.visible {
-    max-height: 3000px; /* מספיק גבוה להכל */
+    max-height: 3000px;
     opacity: 1;
     padding: 25px;
-    overflow: visible; /* מאפשר לתיבת העריכה להיראות */
+    overflow: visible; /* allow edit box to show */
 }
 
 .shopping-list {
@@ -81,7 +81,7 @@
     color: white;
 }
 
-/* תיבת העריכה */
+/* Edit box */
 .edit-box {
     margin-top: 25px;
     background: rgba(255, 255, 255, 0.25);

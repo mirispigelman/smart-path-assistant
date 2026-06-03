@@ -1,11 +1,12 @@
 import fs from 'fs/promises';
 import { extractProductsFromPDF, 
          extractProductsFromImage,
-         extractProductsFromText } from '../utils/assistant.js';
-import { getEmbedding, generateAIResponse } from '../utils/geminiClient.js';
+         extractProductsFromVoice } from '../utils/assistant.js';
+import { getEmbedding } from '../utils/geminiClient.js';
 import { calculateShortestPath } from '../utils/pathfinding.js';
-import { findOrCreateUser,findClosestCategory,
+import { findOrCreateUser, findClosestCategory, userExists,
          getMappedItemsForPathfinding,
+         countCategoryEmbeddings,
          updateItemOrder,
          getSortedShoppingList,
          addItemToRawList, 
@@ -16,9 +17,133 @@ updateItemDB,
 deleteItemDB,
 getShoppingListDB
   } from '../models/dbService.js';
-  
 
-// --- לוגיקת אימות משתמש ---
+function geminiErrorResponse(error, res) {
+    const status = error?.status ?? error?.code;
+    if (status === 429) {
+        return res.status(429).json({
+            success: false,
+            code: 'GEMINI_QUOTA',
+            error:
+                'Gemini API daily limit reached. Wait about 1 minute and try again, or check your API key quota at https://ai.google.dev',
+        });
+    }
+    return res.status(500).json({
+        success: false,
+        error: error?.message || 'AI request failed',
+    });
+}
+
+async function requireValidUser(userId, res) {
+    const id = parseInt(userId, 10);
+    if (!id || !(await userExists(id))) {
+        res.status(401).json({
+            success: false,
+            code: 'INVALID_USER',
+            error: 'Session expired. Please log in again.',
+        });
+        return null;
+    }
+    return id;
+}
+
+async function mapUnmappedItemsForUser(userId) {
+    const unmappedItems = await getUnmappedItems(userId);
+    for (const item of unmappedItems) {
+        try {
+            const itemEmbedding = await getEmbedding(item.item_name);
+            if (itemEmbedding) {
+                const categoryId = await findClosestCategory(itemEmbedding);
+                if (categoryId) {
+                    await updateItemMapping(categoryId, item.id);
+                }
+            }
+        } catch (e) {
+            console.error(`Mapping error for ${item.item_name}:`, e.message);
+        }
+    }
+}
+
+function buildListWithPaths(sortedList, mappedItems) {
+    if (mappedItems.length === 0) {
+        return sortedList.map((item) => ({ ...item, fullPath: [], mapped: false }));
+    }
+
+    const calculatedOrderMap = calculateShortestPath(mappedItems);
+    const metaByItemId = Object.fromEntries(
+        mappedItems.map((m) => [
+            m.item_id,
+            {
+                r: m.r,
+                c: m.c,
+                categoryId: m.category_id,
+                categoryName: m.category_name,
+            },
+        ])
+    );
+
+    const enriched = sortedList.map((item) => {
+        const pathInfo = calculatedOrderMap[item.id] || { fullPath: [] };
+        const meta = metaByItemId[item.id];
+        return {
+            ...item,
+            fullPath: pathInfo.fullPath,
+            // Pickup order from pathfinding (1 = first item to collect)
+            routeOrder: pathInfo.order ?? Number.POSITIVE_INFINITY,
+            mapped: !!meta,
+            aisle: meta ? { row: meta.r, col: meta.c } : null,
+            categoryId: meta?.categoryId ?? null,
+            categoryName: meta?.categoryName ?? null,
+        };
+    });
+
+    
+    return enriched.sort((a, b) => a.routeOrder - b.routeOrder);
+}
+
+/** Text summary built from DB data only — no Gemini involved */
+function buildRouteSummaryFromDb(listWithPaths) {
+    const mapped = listWithPaths.filter((item) => item.mapped);
+    if (mapped.length === 0) return '';
+
+    const stops = mapped.map((item) => item.item_name).join(' → ');
+    const details = mapped
+        .map(
+            (item, i) =>
+                `${i + 1}. ${item.item_name} → "${item.categoryName}" (aisle ${item.aisle.col}, shelf ${item.aisle.row})`
+        )
+        .join('\n');
+
+    return `Route based on the store layout in the database:\n${stops}\n\n${details}`;
+}
+
+async function applyPathToDb(userId) {
+    const mappedItems = await getMappedItemsForPathfinding(userId);
+    if (mappedItems.length === 0) return mappedItems;
+
+    const calculatedOrderMap = calculateShortestPath(mappedItems);
+    for (const itemId in calculatedOrderMap) {
+        await updateItemOrder(parseInt(itemId, 10), calculatedOrderMap[itemId].order);
+    }
+    return mappedItems;
+}
+
+function buildMappingWarning(embeddingCount, mappedCount, totalCount, unmappedNames = []) {
+    if (embeddingCount === 0) {
+        return 'Category vectors are still loading on the server. Please wait a minute after startup and try again.';
+    }
+    if (mappedCount === 0 && totalCount > 0) {
+        const names = unmappedNames.length ? `: ${unmappedNames.join(', ')}` : '';
+        return `Could not map products to store aisles${names}. These products do not exist in the store.`;
+    }
+    if (mappedCount < totalCount) {
+        const names = unmappedNames.length ? ` Not in store: ${unmappedNames.join(', ')}.` : '';
+        return `Only ${mappedCount} of ${totalCount} items could be mapped to a store aisle.${names}`;
+    }
+    return null;
+}
+
+// --- User authentication ---
 export const login = async (req, res) => {
  try {
         const { email, name } = req.body;
@@ -28,7 +153,7 @@ export const login = async (req, res) => {
             return res.status(400).json({ error: 'Email and name is required' });
         }
 
-        // שימוש בפונקציה מה-dbService
+        // Use dbService helper
         const userId = await findOrCreateUser(email, name || 'User');
 
         res.json({ 
@@ -41,14 +166,22 @@ export const login = async (req, res) => {
         res.status(500).json({ error: 'Failed to authenticate user' });
     }
 };
+export const validateUser = async (req, res) => {
+    const id = parseInt(req.params.userId, 10);
+    const valid = id && (await userExists(id));
+    res.json({ valid: !!valid, userId: valid ? id : null });
+};
+
 export const addItem = async (req, res) => {
      try {
             const { userId, item_name } = req.body;
             if (!userId || !item_name) {
                 return res.status(400).json({ error: 'UserID and item name required' });
             }
-            console.log("app.post(/api/list/add-item", userId, item_name);
-            const itemId = await addItemToRawList(userId, item_name); 
+            const validUserId = await requireValidUser(userId, res);
+            if (!validUserId) return;
+            console.log("app.post(/api/list/add-item", validUserId, item_name);
+            const itemId = await addItemToRawList(validUserId, item_name); 
             res.json({ success: true, itemId });
         } catch (error) {
             console.error('Add Item Error:', error);
@@ -62,32 +195,33 @@ export const addVoiceItems = async (req, res) => {
             if (!userId || !transcript) {
                 return res.status(400).json({ error: 'UserID and transcript required' });
             }
+            const validUserId = await requireValidUser(userId, res);
+            if (!validUserId) return;
     
             console.log("Gemini is analyzing transcript:", transcript);
     
-            // 1. שימוש ב-Gemini כדי לפרק את הטקסט למערך של מוצרים
-            const extractedProducts = await extractProductsFromText(transcript);
+            // 1. Use Gemini to split transcript into product names
+            const extractedProducts = await extractProductsFromVoice(transcript);
     
             if (!extractedProducts || extractedProducts.length === 0) {
-                return res.json({ success: true, items: [], message: "לא זוהו מוצרים" });
+                return res.json({ success: true, items: [], message: "No products detected" });
             }
     
             const addedIds = [];
             for (const itemName of extractedProducts) {
-                const itemId = await addItemToRawList(userId, itemName);
+                const itemId = await addItemToRawList(validUserId, itemName);
                 addedIds.push(itemId);
             }
     
             res.json({ 
                 success: true, 
                 items: extractedProducts, 
-                message: `נוספו ${extractedProducts.length} מוצרים בהצלחה` 
+                message: `Successfully added ${extractedProducts.length} products` 
             });
     
         } catch (error) {
             console.error('Voice AI Route Error:', error);
-            console.error('שגיאת ה-AI המלאה:', error);
-            res.status(500).json({ error: 'Failed to process voice with AI' });
+            return geminiErrorResponse(error, res);
         }
     };
 
@@ -99,56 +233,32 @@ export const calculatePath = async (req, res) => {
         if (!userId) {
             return res.status(400).json({ error: 'UserID required' });
         }
+        const validUserId = await requireValidUser(userId, res);
+        if (!validUserId) return;
 
-        // 1. מיפוי (AI Mapping): טפל בפריטים לא ממופים
-        const unmappedItems = await getUnmappedItems(userId);
+        await mapUnmappedItemsForUser(validUserId);
 
-        for (const item of unmappedItems) {
-            try {
-                const itemEmbedding = await getEmbedding(item.item_name);
-                if (itemEmbedding) {
-                    const categoryId = await findClosestCategory(itemEmbedding);
-                    if (categoryId) {
-                        await updateItemMapping(categoryId, item.id);
-                    }
-                }
-            } catch (e) {
-                console.error(`Mapping error for ${item.item_name}:`, e.message);
-            }
+        const finalSortedList = await getSortedShoppingList(validUserId);
+        if (finalSortedList.length === 0) {
+            return res.json({ success: true, list: [], answer: 'The list is empty.' });
         }
 
-        // 2. שליפת פריטים ממופים לחישוב מסלול
-        const mappedItems = await getMappedItemsForPathfinding(userId);
-
-        if (mappedItems.length === 0) {
-            return res.json({ success: true, list: [], answer: 'הרשימה ריקה.' });
-        }
-
-        // 3. חישוב מסלול (מחזיר אובייקט עם סדר וכיוון לכל ID)
-        const calculatedOrderMap = calculateShortestPath(mappedItems);
-
-        // 4. עדכון הסדר המחושב ב-DB (ה-DB שומר רק את המספר, לא את החץ)
-        for (const itemId in calculatedOrderMap) {
-            // תיקון קריטי: שולחים רק את ה-order (מספר) לפונקציית ה-DB
-            await updateItemOrder(parseInt(itemId), calculatedOrderMap[itemId].order);
-        }
-
-        // 5. שליפת הרשימה המסודרת מה-DB
-        const finalSortedList = await getSortedShoppingList(userId); 
-
-        // 6. מיזוג החצים לתוך הרשימה הסופית (בזיכרון, בלי לשמור ב-DB)
-        const listWithArrows = finalSortedList.map(item => {
-            // אנחנו משתמשים ב-ID כדי למצוא את המסלול שחושב באלגוריתם
-            const pathInfo = calculatedOrderMap[item.id] || { fullPath: [] };
-            return {
-                ...item,
-                fullPath: pathInfo.fullPath // מעבירים את המערך המלא ל-Frontend
-            };
-        });
+        const mappedItems = await applyPathToDb(validUserId);
+        const embeddingCount = await countCategoryEmbeddings();
+        const unmappedAfter = await getUnmappedItems(validUserId);
+        const unmappedNames = unmappedAfter.map((item) => item.item_name);
+        const listWithArrows = buildListWithPaths(finalSortedList, mappedItems);
+        const mappingWarning = buildMappingWarning(
+            embeddingCount,
+            mappedItems.length,
+            finalSortedList.length,
+            unmappedNames
+        );
 
         res.json({
             success: true,
-            list: listWithArrows, // הרשימה חוזרת עם חצים!
+            list: listWithArrows,
+            mappingWarning,
         });
 
     } catch (error) {
@@ -165,9 +275,15 @@ export const uploadAndCalculate = async (req, res) => {
         const { userId } = req.body;
         const filePath = req.file.path;
         const mimeType = req.file.mimetype;
+
+        const validUserId = await requireValidUser(userId, res);
+        if (!validUserId) {
+            await fs.unlink(filePath).catch(() => {});
+            return;
+        }
     
         try {
-            // --- שלב 1: חילוץ טקסט בעזרת Gemini לפי סוג הקובץ ---
+            // --- Step 1: Extract products via Gemini based on file type ---
             let extractedProducts = [];
             
             if (mimeType === 'application/pdf') {
@@ -181,93 +297,45 @@ export const uploadAndCalculate = async (req, res) => {
             }
     
             if (!extractedProducts || extractedProducts.length === 0) {
-                return res.json({ success: true, message: "לא נמצאו מוצרים בקובץ", list: [] });
+                return res.json({ success: true, message: "No products found in the file", list: [] });
             }
     
-            // --- שלב 2: הוספת המוצרים הגולמיים ל-DB ---
+            // --- Step 2: Add products to list only (route on "Calculate shortest route") ---
             console.log(`Adding ${extractedProducts.length} items to DB...`);
             for (const itemName of extractedProducts) {
-                await addItemToRawList(userId, itemName);
+                await addItemToRawList(validUserId, itemName);
             }
-    
-            // --- שלב 3: הרצת לוגיקת המיפוי והחישוב (העתקה מה-calculate-path) ---
-            // אנחנו מריצים את זה כאן כדי שהמשתמש יקבל תוצאה מידית
-            
-            const unmappedItems = await getUnmappedItems(userId);
-    
-            for (const item of unmappedItems) {
-                try {
-                    const itemEmbedding = await getEmbedding(item.item_name);
-                    if (itemEmbedding) {
-                        const categoryId = await findClosestCategory(itemEmbedding);
-                        if (categoryId) {
-                            await updateItemMapping(categoryId, item.id);
-                        }
-                    }
-                } catch (e) {
-                    console.error(`Mapping error for ${item.item_name}:`, e.message);
-                }
-            }
-    
-            // --- שלב 4: חישוב המסלול הסופי ---
-            const mappedItems = await getMappedItemsForPathfinding(userId);
-            
-            if (mappedItems.length > 0) {
-                const calculatedOrderMap = calculateShortestPath(mappedItems);
-                for (const itemId in calculatedOrderMap) {
-                    // תיקון קריטי: חילוץ ה-order מתוך האובייקט למניעת שגיאת DB
-                    await updateItemOrder(parseInt(itemId), calculatedOrderMap[itemId].order);
-                }
-            }
-    
-            const finalSortedList = await getSortedShoppingList(userId);
-            
-            // מיזוג המסלול המלא לתוך הרשימה הסופית לפני השליחה ללקוח
-            const mappedItemsForResponse = await getMappedItemsForPathfinding(userId);
-            const calculatedOrderMap = calculateShortestPath(mappedItemsForResponse);
-            
-            const listWithPaths = finalSortedList.map(item => {
-                const pathInfo = calculatedOrderMap[item.id] || { fullPath: [] };
-                return { ...item, fullPath: pathInfo.fullPath };
-            });
-            
-            // סיכום AI קצר
-            const pathSummary = finalSortedList.map(item => item.item_name).join(' -> ');
-            const aiSummary = await generateAIResponse(`הנה הרשימה שחילצתי מהקובץ, מסודרת לפי מסלול הליכה: ${pathSummary}`);
-    
-            // --- שלב 5: שליחת תשובה סופית ---
+
             res.json({
                 success: true,
-                message: 'הקובץ עובד והמסלול חושב',
-                list: listWithPaths, // שולחים את הרשימה עם המסלולים המלאים
-                answer: aiSummary
+                message: `Added ${extractedProducts.length} product(s) to your list. Press "Calculate shortest route" when ready.`,
+                items: extractedProducts,
             });
     
         } catch (error) {
             console.error('Full Process Error:', error);
-            res.status(500).json({ error: error.message || 'Failed to process file' });
+            return geminiErrorResponse(error, res);
         } finally {
-            // מחיקת הקובץ הזמני
             await fs.unlink(filePath).catch(err => console.error("Temp file delete error:", err));
         }
     };
-    // בקובץ shoppingController.js
+
 export const getShoppingListWithDirections = async (req, res) => {
     try {
         const { userId } = req.params;
         
-        // קבלת רשימת הפריטים המסודרת
+        // Fetch sorted item list
         const sortedItems = await getSortedShoppingList(userId);
         
-        // קבלת נתיב המלא
+        // Full path data
         const mappedItems = await getMappedItemsForPathfinding(userId);
         const { directions } = calculateShortestPath(mappedItems);
         
-        // מיפוי ה-directions לפי סדר הפריטים
+        // Map directions onto sorted items
         const itemsWithDirections = sortedItems.map((item, index) => {
             const direction = index < directions.length ? 
                 directions[index].direction : 
-                'הגעת ליעד הסופי';
+                'You reached the final destination';
                 
             return {
                 ...item,
@@ -282,7 +350,7 @@ export const getShoppingListWithDirections = async (req, res) => {
 
     } catch (error) {
         console.error('Error getting shopping list with directions:', error);
-        res.status(500).json({ error: 'שגיאה בשליפת רשימת הקניות' });
+        res.status(500).json({ error: 'Error fetching shopping list' });
     }
 };
 

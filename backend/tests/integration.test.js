@@ -1,13 +1,15 @@
 import request from 'supertest';
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
-// --- הגדרת Mocks (חובה לפני האימפורט של ה-app) ---
+// --- Mock setup (must run before importing the app) ---
 
-// 1. Mock dbService - כדי לא לכתוב ל-DB האמיתי
+// 1. Mock dbService — avoid writing to the real DB
 jest.unstable_mockModule('../models/dbService.js', () => ({
     findOrCreateUser: jest.fn(),
+    userExists: jest.fn(),
     addItemToRawList: jest.fn(),
     findClosestCategory: jest.fn(),
+    countCategoryEmbeddings: jest.fn(),
     getMappedItemsForPathfinding: jest.fn(),
     updateItemOrder: jest.fn(),
     getSortedShoppingList: jest.fn(),
@@ -15,11 +17,14 @@ jest.unstable_mockModule('../models/dbService.js', () => ({
     getUnmappedItems: jest.fn(),
     clearUserList: jest.fn(),
     getCategories: jest.fn(),
+    deleteItemDB: jest.fn(),
+    updateItemDB: jest.fn(),
+    getShoppingListDB: jest.fn(),
 }));
 
-// 2. Mock AI Services - כדי לא לפנות ל-Gemini
+// 2. Mock AI services — avoid calling Gemini
 jest.unstable_mockModule('../utils/assistant.js', () => ({
-    extractProductsFromText: jest.fn(),
+    extractProductsFromVoice: jest.fn(),
     extractProductsFromPDF: jest.fn(),
     extractProductsFromImage: jest.fn(),
 }));
@@ -31,7 +36,7 @@ jest.unstable_mockModule('../utils/pathfinding.js', () => ({
     calculateShortestPath: jest.fn(),
 }));
 
-// --- טעינה דינמית של האפליקציה וה-Mocks ---
+// --- Dynamic import of app and mocks ---
 const { app } = await import('../server.js');
 const dbService = await import('../models/dbService.js');
 const assistant = await import('../utils/assistant.js');
@@ -42,21 +47,19 @@ describe('API Integration Tests', () => {
     
     beforeEach(() => {
         jest.clearAllMocks();
+        dbService.userExists.mockResolvedValue(true);
     });
 
     describe('POST /api/list/add-item', () => {
         it('should add an item successfully and return 200', async () => {
-            // Arrange
             const mockItemId = 123;
             dbService.addItemToRawList.mockResolvedValue(mockItemId);
 
-            // Act
             const response = await request(app)
                 .post('/api/list/add-item')
                 .send({ userId: 1, item_name: 'Banana' })
                 .set('Content-Type', 'application/json');
 
-            // Assert
             expect(response.statusCode).toBe(200);
             expect(response.body).toEqual({ success: true, itemId: mockItemId });
             expect(dbService.addItemToRawList).toHaveBeenCalledWith(1, 'Banana');
@@ -89,7 +92,7 @@ describe('API Integration Tests', () => {
     describe('POST /api/list/add-voice-items', () => {
         it('should process transcript and return items', async () => {
             const mockItems = ['milk', 'bread'];
-            assistant.extractProductsFromText.mockResolvedValue(mockItems);
+            assistant.extractProductsFromVoice.mockResolvedValue(mockItems);
             dbService.addItemToRawList.mockResolvedValue(1);
 
             const response = await request(app)
@@ -105,27 +108,25 @@ describe('API Integration Tests', () => {
     describe('POST /api/calculate-path', () => {
         it('should calculate path and return sorted list', async () => {
             const userId = 1;
-            dbService.getUnmappedItems.mockResolvedValue([]); 
             const mockMappedItems = [{ item_id: 10, r: 0, c: 0 }];
+            dbService.getUnmappedItems.mockResolvedValue([]);
             dbService.getMappedItemsForPathfinding.mockResolvedValue(mockMappedItems);
             
-            // Mock pathfinding to return object with order and fullPath
             pathfinding.calculateShortestPath.mockReturnValue({ '10': { order: 1, fullPath: ['⬇️'] } });
             
             const mockSortedList = [{ id: 10, item_name: 'Apple', calculated_order: 1 }];
             dbService.getSortedShoppingList.mockResolvedValue(mockSortedList);
+            dbService.countCategoryEmbeddings.mockResolvedValue(40);
 
             const response = await request(app).post('/api/calculate-path').send({ userId });
 
             expect(response.statusCode).toBe(200);
-            // בדיקה שהרשימה כוללת את fullPath שהקונטרולר ממזג
-            expect(response.body.list).toEqual([{ 
+            expect(response.body.list[0]).toEqual(expect.objectContaining({ 
                 id: 10, 
                 item_name: 'Apple', 
                 calculated_order: 1, 
                 fullPath: ['⬇️'] 
-            }]);
-            // בדיקה שהקונטרולר שולח רק את המספר (order) ל-DB
+            }));
             expect(dbService.updateItemOrder).toHaveBeenCalledWith(10, 1);
         });
     });
@@ -145,17 +146,12 @@ describe('API Integration Tests', () => {
     });
 
     describe('POST /api/upload-and-calculate', () => {
-        it('should process uploaded PDF and return calculated path', async () => {
+        it('should process uploaded PDF and add items to the list', async () => {
             const userId = 1;
             const mockExtracted = ['Milk'];
             
             assistant.extractProductsFromPDF.mockResolvedValue(mockExtracted);
             dbService.addItemToRawList.mockResolvedValue(1);
-            dbService.getUnmappedItems.mockResolvedValue([]);
-            dbService.getMappedItemsForPathfinding.mockResolvedValue([{ item_id: 1, r: 0, c: 0 }]);
-            pathfinding.calculateShortestPath.mockReturnValue({ '1': { order: 1, fullPath: [] } });
-            dbService.getSortedShoppingList.mockResolvedValue([{ id: 1, item_name: 'Milk', calculated_order: 1 }]);
-            geminiClient.generateAIResponse.mockResolvedValue('AI Summary');
 
             const response = await request(app)
                 .post('/api/upload-and-calculate')
@@ -165,8 +161,7 @@ describe('API Integration Tests', () => {
             expect(response.statusCode).toBe(200);
             expect(response.body.success).toBe(true);
             expect(assistant.extractProductsFromPDF).toHaveBeenCalled();
-            expect(response.body.list).toHaveLength(1);
-            expect(response.body.answer).toBe('AI Summary');
+            expect(response.body.items).toEqual(mockExtracted);
         });
     });
 });

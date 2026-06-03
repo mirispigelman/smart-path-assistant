@@ -1,8 +1,8 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
-// --- הגדרת Mocks (חובה לפני האימפורט של ה-app) ---
+// --- Mock setup (must run before importing the app) ---
 
-// 1. Mock fs/promises (כדי לא למחוק קבצים באמת)
+// 1. Mock fs/promises (avoid deleting real files)
 jest.unstable_mockModule('fs/promises', () => ({
     default: {
         unlink: jest.fn().mockResolvedValue(undefined),
@@ -12,19 +12,24 @@ jest.unstable_mockModule('fs/promises', () => ({
 // 2. Mock dbService
 jest.unstable_mockModule('../models/dbService.js', () => ({
     findOrCreateUser: jest.fn(),
+    userExists: jest.fn(),
     addItemToRawList: jest.fn(),
     findClosestCategory: jest.fn(),
+    countCategoryEmbeddings: jest.fn(),
     getMappedItemsForPathfinding: jest.fn(),
     updateItemOrder: jest.fn(),
     getSortedShoppingList: jest.fn(),
     updateItemMapping: jest.fn(),
     getUnmappedItems: jest.fn(),
     clearUserList: jest.fn(),
+    deleteItemDB: jest.fn(),
+    updateItemDB: jest.fn(),
+    getShoppingListDB: jest.fn(),
 }));
 
 // 3. Mock assistant
 jest.unstable_mockModule('../utils/assistant.js', () => ({
-    extractProductsFromText: jest.fn(),
+    extractProductsFromVoice: jest.fn(),
     extractProductsFromPDF: jest.fn(),
     extractProductsFromImage: jest.fn(),
 }));
@@ -40,7 +45,7 @@ jest.unstable_mockModule('../utils/pathfinding.js', () => ({
     calculateShortestPath: jest.fn(),
 }));
 
-// --- טעינה דינמית של הקבצים ---
+// --- Dynamic import ---
 const shoppingController = await import('../controllers/shoppingController.js');
 const dbService = await import('../models/dbService.js');
 const assistant = await import('../utils/assistant.js');
@@ -62,6 +67,7 @@ describe('Shopping Controller Unit Tests', () => {
             status: jest.fn().mockReturnThis(),
         };
         jest.clearAllMocks();
+        dbService.userExists.mockResolvedValue(true);
     });
 
     describe('login', () => {
@@ -104,15 +110,15 @@ describe('Shopping Controller Unit Tests', () => {
 
     describe('addVoiceItems', () => {
         it('should process transcript and add multiple items', async () => {
-            req.body = { userId: 1, transcript: 'חלב ולחם' };
-            const mockProducts = ['חלב', 'לחם'];
+            req.body = { userId: 1, transcript: 'milk and bread' };
+            const mockProducts = ['milk', 'bread'];
             
-            assistant.extractProductsFromText.mockResolvedValue(mockProducts);
+            assistant.extractProductsFromVoice.mockResolvedValue(mockProducts);
             dbService.addItemToRawList.mockResolvedValue(200);
 
             await shoppingController.addVoiceItems(req, res);
 
-            expect(assistant.extractProductsFromText).toHaveBeenCalledWith('חלב ולחם');
+            expect(assistant.extractProductsFromVoice).toHaveBeenCalledWith('milk and bread');
             expect(dbService.addItemToRawList).toHaveBeenCalledTimes(2);
             expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
                 success: true,
@@ -160,36 +166,23 @@ describe('Shopping Controller Unit Tests', () => {
     });
 
     describe('uploadAndCalculate', () => {
-        it('should process PDF, add items, calc path, and return result', async () => {
+        it('should process PDF and add items to list without calculating route', async () => {
             req.body = { userId: 1 };
             req.file = { path: 'temp_test.pdf', mimetype: 'application/pdf' };
 
-            // Mocks
-            assistant.extractProductsFromPDF.mockResolvedValue(['Milk']);
+            assistant.extractProductsFromPDF.mockResolvedValue(['Milk', 'Eggs']);
             dbService.addItemToRawList.mockResolvedValue(100);
-            dbService.getUnmappedItems.mockResolvedValue([]);
-            dbService.getMappedItemsForPathfinding.mockResolvedValue([{ id: 100 }]);
-            
-            // Pathfinding mock
-            pathfinding.calculateShortestPath.mockReturnValue({ 
-                '100': { order: 1, fullPath: ['⬇️'] } 
-            });
-            
-            dbService.getSortedShoppingList.mockResolvedValue([{ id: 100, item_name: 'Milk' }]);
-            geminiClient.generateAIResponse.mockResolvedValue('AI Summary');
 
             await shoppingController.uploadAndCalculate(req, res);
 
-            // Assertions
             expect(assistant.extractProductsFromPDF).toHaveBeenCalledWith('temp_test.pdf');
-            expect(dbService.addItemToRawList).toHaveBeenCalledWith(1, 'Milk');
-            expect(dbService.updateItemOrder).toHaveBeenCalledWith(100, 1); // Verify numeric order update
-            expect(fs.default.unlink).toHaveBeenCalledWith('temp_test.pdf'); // Verify file cleanup
-            
+            expect(dbService.addItemToRawList).toHaveBeenCalledTimes(2);
+            expect(pathfinding.calculateShortestPath).not.toHaveBeenCalled();
+            expect(fs.default.unlink).toHaveBeenCalledWith('temp_test.pdf');
+
             expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
                 success: true,
-                list: expect.any(Array),
-                answer: 'AI Summary'
+                items: ['Milk', 'Eggs'],
             }));
         });
 

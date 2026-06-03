@@ -19,17 +19,21 @@ export const addItemManual = async (userId, itemName) => {
     return response.json();
 };
 
-export const uploadFileAndCalculate = async (userId, file) => {
-    console.log("uploadFileAndCalculate");
+/** Upload image/PDF — extracts products and adds to list only (no route). */
+export const uploadFileToList = async (userId, file) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('userId', userId);
+    formData.append('userId', String(userId));
 
     const response = await fetch(`${API_URL}/upload-and-calculate`, {
         method: 'POST',
-        body: formData, // FormData לא מצריך Headers של Content-Type
+        body: formData,
     });
-    return response.json();
+    const data = await response.json();
+    if (!response.ok && !data.code) {
+        return { success: false, error: data.error || `Request failed (${response.status})` };
+    }
+    return data;
 };
 
 export const calculatePath = async (userId) => {

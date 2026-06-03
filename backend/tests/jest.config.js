@@ -1,20 +1,17 @@
 export default {
   testEnvironment: 'node',
-  transform: {}, // נדרש עבור תמיכה ב-ES Modules
+  transform: {}, // required for ES Modules support
   
-  // הפעלת איסוף כיסוי קוד
   collectCoverage: true,
   coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'html'], // דוח טקסט בטרמינל ודוח HTML ויזואלי
+  coverageReporters: ['text', 'html'],
   
-  // אילו קבצים לבדוק?
   collectCoverageFrom: [
     'controllers/**/*.js',
     'models/**/*.js',
     'utils/**/*.js'
   ],
 
-  // הגדרת הרף: אם הכיסוי נמוך מ-50%, הבדיקה תיכשל
   coverageThreshold: {
     global: {
       lines: 50,

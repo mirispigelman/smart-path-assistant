@@ -1,30 +1,30 @@
-// הגדרת גודל המטריצה (לפי ה-SQL: אינדקסים 0-7 ו-0-4)
+// Matrix dimensions (per SQL: row indices 0–7, column indices 0–4)
 const ROWS = 8;
 const COLS = 5;
 
-// הגדרת חוקי המעבר: מעבר אופקי (בין עמודות) מותר רק בשורות אלו:
+// Cross-aisle rules: horizontal moves between columns are allowed only on these rows:
 const ALLOWED_CROSS_ROWS = new Set([0, 3, 4]); 
 
 /**
- * חישוב המסלול המלא בין שתי נקודות באמצעות BFS
- * מחזיר את המרחק ואת מערך הצעדים (fullPath).
+ * Compute the full path between two grid points using BFS.
+ * Returns distance and the step array (fullPath).
  */
 function getBFS_Path(start, end) {
     if (start.r === end.r && start.c === end.c) {
-        return { distance: 0, fullPath: [] }; // כבר נמצאים בנקודה
+        return { distance: 0, fullPath: [] }; // already at destination
     }
 
-    // התור מכיל: מיקום נוכחי ומערך הצעדים שהובילו אליו
+    // Queue holds: current position and the path of steps that led here
     const queue = [{ r: start.r, c: start.c, path: [] }];
     const visited = new Set();
     const startKey = `${start.r},${start.c}`;
     visited.add(startKey);
 
     const moves = [
-        { dr: 1, dc: 0, label: '⬇️' },  // למטה (במטריצה r גדל) - שים לב: r גדל זה למטה ויזואלית
-        { dr: -1, dc: 0, label: '⬆️' }, // למעלה (במטריצה r קטן)
-        { dr: 0, dc: 1, label: '➡️' },  // ימינה
-        { dr: 0, dc: -1, label: '⬅️' }  // שמאלה
+        { dr: 1, dc: 0, label: '⬇️' },  // down (r increases — visually downward on the map)
+        { dr: -1, dc: 0, label: '⬆️' }, // up (r decreases)
+        { dr: 0, dc: 1, label: '➡️' },  // right
+        { dr: 0, dc: -1, label: '⬅️' }  // left
     ];
 
     while (queue.length > 0) {
@@ -35,8 +35,7 @@ function getBFS_Path(start, end) {
             const nc = c + move.dc;
 
             if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                // בדיקת חוקיות המעבר:
-                // אם זזים אופקית (שינוי בעמודה), חייבים להיות בשורה מותרת
+                // Validate move: horizontal steps require an allowed cross-aisle row
                 if (move.dc !== 0 && !ALLOWED_CROSS_ROWS.has(r)) {
                     continue;
                 }
@@ -44,10 +43,8 @@ function getBFS_Path(start, end) {
                 const newKey = `${nr},${nc}`;
                 if (visited.has(newKey)) continue;
 
-                // יצירת המסלול החדש
                 const newPath = [...path, move.label];
 
-                // אם הגענו ליעד
                 if (nr === end.r && nc === end.c) {
                     return { distance: newPath.length, fullPath: newPath };
                 }
@@ -57,18 +54,18 @@ function getBFS_Path(start, end) {
             }
         }
     }
-    // אם לא נמצא מסלול (לא אמור לקרות אם הגרף קשיר)
+    // No path found (should not happen if the graph is connected)
     return { distance: Infinity, fullPath: [] }; 
 }
 
 export function calculateShortestPath(itemCoordinates) {
     if (itemCoordinates.length === 0) return {};
     
-    // נקודת התחלה: כניסה (הנחה: שורה 0 עמודה 0 או דומה)
+    // Start point: store entrance
     const startPoint = { r: 1, c: 0 }; 
     let currentPoint = startPoint;
     
-    // המרה בטוחה למספרים כדי למנוע בעיות השוואה
+    // Coerce coordinates to numbers for reliable comparison
     let remainingItems = itemCoordinates.map(item => ({
         ...item,
         r: parseInt(item.r, 10),
@@ -87,13 +84,14 @@ export function calculateShortestPath(itemCoordinates) {
             const item = remainingItems[i];
             const result = getBFS_Path(currentPoint, { r: item.r, c: item.c });
             
-            // אופטימיזציה: אם המרחק הוא 0 (אנחנו כבר שם), קח את הפריט מיד!
-            // זה מבטיח שפריטים מאותה קטגוריה יהיו צמודים ברשימה.
+            // Optimization: distance 0 means we are already at this cell — pick it immediately
+            // so items in the same category stay adjacent in the list.
             if (result.distance === 0) {
                 shortestDistance = 0;
                 nextItemIndex = i;
-                bestPath = []; // אין צעדים
-                break; // אין טעם להמשיך לחפש, מצאנו את הכי קרוב שאפשר
+                // Another item in the same category/cell — same aisle, not a new entrance stop
+                bestPath = currentOrder === 1 ? [] : ['↔️'];
+                break;
             }
 
             if (result.distance < shortestDistance) {
@@ -106,20 +104,16 @@ export function calculateShortestPath(itemCoordinates) {
         if (nextItemIndex !== -1) {
             const nextItem = remainingItems[nextItemIndex];
             
-            // שמירת הסדר והמסלול המלא עבור הפריט
             calculatedOrderMap[nextItem.item_id] = {
                 order: currentOrder++,
                 fullPath: bestPath
             };
             
-            // עדכון הנקודה הנוכחית למיקום המוצר שנאסף
             currentPoint = { r: nextItem.r, c: nextItem.c };
-            
-            // הסרת הפריט מהרשימה
             remainingItems.splice(nextItemIndex, 1);
         } else {
-            // Fallback: אם ה-BFS נכשל (למשל יעד לא נגיש), ניקח את הפריט הראשון ברשימה
-            // כדי לא להיתקע בלולאה אינסופית או לאבד פריטים.
+            // Fallback: if BFS fails (e.g. unreachable target), take the first item
+            // to avoid an infinite loop or dropping items.
             const nextItem = remainingItems[0];
             calculatedOrderMap[nextItem.item_id] = {
                 order: currentOrder++,

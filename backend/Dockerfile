@@ -1,51 +1,46 @@
-# # שלב 1: בניית התלויות
+# # Stage 1: install dependencies
 # FROM node:20-alpine AS dependencies
 # WORKDIR /app
 # COPY package*.json ./
-# # התקנת תלויות Production בלבד
+# # Production dependencies only
 # RUN npm ci --omit=dev
 
-# # שלב 2: יצירת אימג' Production סופי
+# # Stage 2: final production image
 # FROM node:20-alpine AS final
 # WORKDIR /app
 
-# # העתקת התלויות מהשלב הקודם
+# # Copy dependencies from previous stage
 # COPY --from=dependencies /app/node_modules ./node_modules
 
-# # העתקת קוד המקור
+# # Copy source code
 # COPY . .
 
-# # יצירת משתמש לא-שורשי והעברת בעלות
+# # Non-root user
 # RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 # USER appuser
 
-# # חשיפת הפורט
 # EXPOSE 5000
 
-# # הפקודה להרצת השרת
 # CMD ["node", "server.js"]
-# שימוש בגרסת Node עדכנית וקלה
+# Latest lightweight Node image
 FROM node:20-alpine
 
 WORKDIR /app
 
-# העתקת קבצי התלות והתקנתם
+# Copy and install dependencies
 COPY package*.json ./
-# התקנת כל התלויות (כולל devDependencies לטסטים)
+# All dependencies (including devDependencies for tests)
 RUN npm install
 
-# העתקת קוד המקור
+# Copy source code
 COPY . .
 
-# יצירת משתמש לא-שורשי והעברת בעלות
-# Ensure the appuser owns the application directory
+# Non-root user and ownership
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
     chown -R appuser:appgroup /app
 
 USER appuser
 
-# חשיפת הפורט
 EXPOSE 5000
 
-# הפקודה להרצת השרת
 CMD ["npm", "start"]

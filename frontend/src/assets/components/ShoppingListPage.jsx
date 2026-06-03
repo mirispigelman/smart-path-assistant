@@ -1,184 +1,135 @@
-// import { useState } from "react";
-// import "../styles/ShoppingListPage.css";
+import { useState, useEffect, useCallback } from 'react';
+import en from '../../i18n/en.js';
 
-// const ShoppingListPage = ({ userId }) => {
-//   const [items, setItems] = useState([]);
-//   const [showList, setShowList] = useState(false);
-//   const [loading, setLoading] = useState(false);
-//   const [editItem, setEditItem] = useState(null);
+const API = 'http://localhost:5000/api';
 
-//   // GET list
-//   const fetchShoppingList = () => {
-//     console.log("00000000000000000000000000")
-//     setLoading(true);
-//     setShowList(true);
+const ShoppingListPage = ({ userId, refreshKey = 0, notify, onItemsLoaded }) => {
+    const [items, setItems] = useState([]);
+    const [showList, setShowList] = useState(true);
+    const [loading, setLoading] = useState(false);
+    const [editItem, setEditItem] = useState(null);
 
-// fetch(`http://localhost:5000/api/list/${userId}`)
-//       .then(res => res.json())
-//       .then(data => setItems(data))
-//       .finally(() => setLoading(false));
-//   };
+    const toast = (msg, type = 'info') => (notify ? notify(msg, type) : null);
 
-//   // DELETE item
-//   const handleDelete = (id) => {
-//     if (!window.confirm("Delete the product?")) return;
+    const fetchShoppingList = useCallback(() => {
+        setLoading(true);
+        fetch(`${API}/list/${userId}`)
+            .then((res) => res.json())
+            .then((data) => {
+                const list = Array.isArray(data) ? data : [];
+                setItems(list);
+                onItemsLoaded?.(list.length);
+            })
+            .catch(() => toast(en.toast.loadFailed, 'error'))
+            .finally(() => setLoading(false));
+    }, [userId, notify, onItemsLoaded]);
 
-//     fetch(`http://localhost:5000/api/item/${id}`, { method: "DELETE" })
-//       .then(() => {
-//         setItems(items.filter(item => item.id !== id));
-//       });
-//   };
+    useEffect(() => {
+        fetchShoppingList();
+    }, [fetchShoppingList, refreshKey]);
 
-//   // PUT update item
-//   const handleUpdate = () => {
-//     fetch(`http://localhost:5000/api/item/${editItem.id}`, {
-//       method: "PUT",
-//       headers: { "Content-Type": "application/json" },
-//       body: JSON.stringify({
-//         item_name: editItem.item_name,
-//             })
-//     }).then(() => {
-//       setItems(items.map(item =>
-//         item.id === editItem.id ? editItem : item
-//       ));
-//       setEditItem(null);
-//     });
-//   };
+    const handleDelete = (id) => {
+        if (!window.confirm(en.list.confirmDelete)) return;
+        fetch(`${API}/item/${id}`, { method: 'DELETE' })
+            .then(() => {
+                const next = items.filter((item) => item.id !== id);
+                setItems(next);
+                onItemsLoaded?.(next.length);
+                toast(en.toast.removed, 'ok');
+            })
+            .catch(() => toast(en.toast.removeFailed, 'error'));
+    };
 
-//   return (
-//   <div className="shopping-page" style={{ border: '2px solid blue', marginTop: '50px' }}>
-//     <button
-//       style={{ position: 'relative', display: 'block', margin: '20px auto', fontSize: '24px' }}
-//       onClick={() => {
-//         if (!showList) { fetchShoppingList(); } 
-//         else { setShowList(false); }
-//       }}
-//     >
-//       Show/Hide List (hhh)
-//     </button>
+    const handleUpdate = () => {
+        fetch(`${API}/item/${editItem.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_name: editItem.item_name }),
+        })
+            .then(() => {
+                setItems(items.map((item) => (item.id === editItem.id ? editItem : item)));
+                setEditItem(null);
+                toast(en.toast.updated, 'ok');
+            })
+            .catch(() => toast(en.toast.updateFailed, 'error'));
+    };
 
+    return (
+        <section className="glass-card" aria-labelledby="items-heading">
+            <div className="list-header">
+                <h2 className="card-title" id="items-heading" style={{ marginBottom: 0 }}>
+                    <span className="ic" aria-hidden="true">🧾</span> {en.list.title}
+                    <span className="list-count">{items.length}</span>
+                </h2>
+                <button
+                    className="btn-icon"
+                    onClick={() => setShowList((s) => !s)}
+                    aria-expanded={showList}
+                    aria-controls="items-body"
+                    aria-label={showList ? en.list.collapse : en.list.expand}
+                >
+                    {showList ? '▲' : '▼'}
+                </button>
+            </div>
 
-//   {showList && loading && <p>Loading...</p>}
-  
-//   {showList && !loading && items.length === 0 && (
-//     <p>No products in the list</p>
-//   )}
-  
-//   {showList && !loading && (
-//     <ul>
-//       {items.map(item => (
-//         <li key={item.id}>
-//           <span>{item.item_name}</span>
-//           <button onClick={() => setEditItem(item)}>✏️</button>
-//           <button onClick={() => handleDelete(item.id)}>🗑️</button>
-//         </li>
-//       ))}
-//     </ul>
-//   )}
+            <div className={`list-body ${showList ? 'open' : ''}`} id="items-body">
+                <div className="inner">
+                    {loading && <p className="muted">{en.list.loading}</p>}
 
-//   {editItem && (
-//     <div className="edit-box">
-//       <h3>Product update</h3>
-//       <input
-//         value={editItem.item_name}
-//         onChange={e => setEditItem({ ...editItem, item_name: e.target.value })}
-//       />
-//       <button onClick={handleUpdate}>Save</button>
-//       <button onClick={() => setEditItem(null)}>Cancel</button>
-//     </div>
-//   )}
-// </div>
-//   );
-// };
-// export default ShoppingListPage;
-import { useState } from "react";
-import "../styles/ShoppingListPage.css";
+                    {!loading && items.length === 0 && (
+                        <div className="empty-state">
+                            <span className="emoji" aria-hidden="true">🛍️</span>
+                            {en.list.empty}
+                        </div>
+                    )}
 
-const ShoppingListPage = ({ userId }) => {
-  const [items, setItems] = useState([]);
-  const [showList, setShowList] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [editItem, setEditItem] = useState(null);
+                    {!loading &&
+                        items.map((item) => (
+                            <div className="item-row" key={item.id}>
+                                <span className="name">{item.item_name}</span>
+                                <div className="item-actions">
+                                    <button
+                                        className="btn-icon"
+                                        onClick={() => setEditItem(item)}
+                                        aria-label={en.list.edit}
+                                    >
+                                        ✏️
+                                    </button>
+                                    <button
+                                        className="btn-icon"
+                                        onClick={() => handleDelete(item.id)}
+                                        aria-label={en.list.delete}
+                                    >
+                                        🗑️
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
 
-  const fetchShoppingList = () => {
-    setLoading(true);
-    setShowList(true);
-    fetch(`http://localhost:5000/api/list/${userId}`)
-      .then(res => res.json())
-      .then(data => setItems(data))
-      .finally(() => setLoading(false));
-  };
-
-  const handleDelete = (id) => {
-    if (!window.confirm("Delete the product?")) return;
-    fetch(`http://localhost:5000/api/item/${id}`, { method: "DELETE" })
-      .then(() => setItems(items.filter(item => item.id !== id)));
-  };
-
-  const handleUpdate = () => {
-    fetch(`http://localhost:5000/api/item/${editItem.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ item_name: editItem.item_name })
-    }).then(() => {
-      setItems(items.map(item => item.id === editItem.id ? editItem : item));
-      setEditItem(null);
-    });
-  };
-
-  return (
-    <div className="shopping-page-container">
-      {/* כפתור הפתיחה - תמיד נגיש ומשתמש בעיצוב היפה שלך */}
-      <button 
-        className="show-list-btn"
-        onClick={() => {
-          if (!showList) fetchShoppingList();
-          else setShowList(false);
-        }}
-      >
-        {showList ? "Close List 🔼" : "Show Shopping List 🛒"}
-      </button>
-
-      {/* האזור שנסגר ונפתח */}
-      <div className={`shopping-list-content ${showList ? 'visible' : ''}`}>
-        
-        {loading && <p className="loading-text">Loading items...</p>}
-        
-        {!loading && items.length === 0 && (
-          <p className="empty-text">No products in the list</p>
-        )}
-        
-        {!loading && items.length > 0 && (
-          <ul className="shopping-list">
-            {items.map(item => (
-              <li key={item.id} className="shopping-item">
-                <span className="item-name">{item.item_name}</span>
-                <div className="item-buttons">
-                  <button onClick={() => setEditItem(item)}>✏️</button>
-                  <button onClick={() => handleDelete(item.id)}>🗑️</button>
+                    {editItem && (
+                        <div className="edit-box">
+                            <h4>{en.list.editTitle}</h4>
+                            <input
+                                className="field"
+                                autoFocus
+                                value={editItem.item_name}
+                                onChange={(e) => setEditItem({ ...editItem, item_name: e.target.value })}
+                                onKeyDown={(e) => e.key === 'Enter' && handleUpdate()}
+                            />
+                            <div className="edit-actions">
+                                <button className="btn btn-primary" onClick={handleUpdate}>
+                                    {en.list.save}
+                                </button>
+                                <button className="btn btn-secondary" onClick={() => setEditItem(null)}>
+                                    {en.list.cancel}
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {editItem && (
-  <div className="edit-box">
-    <h3>Update Product</h3>
-    <input
-      autoFocus // גורם לסמן לקפוץ ישר לתיבת הטקסט
-      value={editItem.item_name}
-      onChange={e => setEditItem({ ...editItem, item_name: e.target.value })}
-    />
-    <div className="edit-buttons">
-      <button className="save-btn" onClick={handleUpdate}>Save</button>
-      <button className="cancel-btn" onClick={() => setEditItem(null)}>Cancel</button>
-    </div>
-  </div>
-)}
-      </div>
-    </div>
-  );
+            </div>
+        </section>
+    );
 };
 
 export default ShoppingListPage;

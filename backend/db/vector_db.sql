@@ -1,6 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- ניקוי טבלאות קיימות (אם יש) כדי למנוע כפילויות או שגיאות
 DROP TABLE IF EXISTS user_shopping_items CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS categories CASCADE;
@@ -28,15 +27,15 @@ CREATE TABLE user_shopping_items (
 );
 
 INSERT INTO users (email, full_name) VALUES
-('tester1@example.com', 'משה כהן') 
+('tester1@example.com', 'Moshe Cohen') 
 ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO users (email, full_name) VALUES
-('tester2@example.com', 'דניאלה לוי') 
+('tester2@example.com', 'Daniela Levi') 
 ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO users (email, full_name) VALUES
-('zipi.3382@gmail.com', 'ציפי סלומון') 
+('zipi.3382@gmail.com', 'Tzipi Salomon') 
 ON CONFLICT (email) DO NOTHING;
 
 

@@ -1,16 +1,46 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Login from './Login';
 import ShoppingActions from './shoppingActions';
 import ShoppingListPage from './ShoppingListPage.jsx';
+import StoreMap from './StoreMap.jsx';
+import en from '../../i18n/en.js';
+
+let toastSeq = 0;
 
 const MainManager = () => {
     const [user, setUser] = useState(null);
-    const [pathResult, setPathResult] = useState({ list: [], aiSummary: '' });
+    const [pathResult, setPathResult] = useState({ list: [], aiSummary: '', mappingWarning: '' });
+    const [listRefreshKey, setListRefreshKey] = useState(0);
+    const [itemCount, setItemCount] = useState(0);
+    const [toasts, setToasts] = useState([]);
+    const routeRef = useRef(null);
+
+    const notify = useCallback((message, type = 'info') => {
+        const id = ++toastSeq;
+        setToasts((prev) => [...prev, { id, message, type }]);
+        setTimeout(() => {
+            setToasts((prev) => prev.filter((t) => t.id !== id));
+        }, 3800);
+    }, []);
 
     useEffect(() => {
         const savedId = localStorage.getItem('userId');
         const savedName = localStorage.getItem('userName');
-        if (savedId) setUser({ id: savedId, name: savedName });
+        if (!savedId) return;
+
+        fetch(`http://localhost:5000/api/auth/validate/${savedId}`)
+            .then((res) => res.json())
+            .then((data) => {
+                if (data.valid) setUser({ id: String(data.userId), name: savedName });
+                else {
+                    localStorage.removeItem('userId');
+                    localStorage.removeItem('userName');
+                }
+            })
+            .catch(() => {
+                localStorage.removeItem('userId');
+                localStorage.removeItem('userName');
+            });
     }, []);
 
     const handleLogin = (id, name) => {
@@ -19,98 +49,177 @@ const MainManager = () => {
         setUser({ id, name });
     };
 
-    const handlePathResult = (list, answer) => {
-        setPathResult({ list, aiSummary: answer });
+    const handleLogout = () => {
+        localStorage.removeItem('userId');
+        localStorage.removeItem('userName');
+        setUser(null);
+        setPathResult({ list: [], aiSummary: '', mappingWarning: '' });
+        setItemCount(0);
     };
 
-    if (!user) return <Login onLoginSuccess={handleLogin} />;
+    const handlePathResult = (list, answer, mappingWarning) => {
+        setPathResult({ list, aiSummary: answer || '', mappingWarning: mappingWarning || '' });
+        if (list.length > 0) {
+            requestAnimationFrame(() =>
+                routeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            );
+        }
+    };
+
+    const refreshShoppingList = () => setListRefreshKey((k) => k + 1);
+
+    if (!user) {
+        return (
+            <>
+                <div className="app-bg-grid" />
+                <Login onLoginSuccess={handleLogin} />
+                <ToastStack toasts={toasts} />
+            </>
+        );
+    }
+
+    const initials = (user.name || '?').trim().charAt(0).toUpperCase();
+    const hasRoute = pathResult.list.length > 0;
+    const step = hasRoute ? 3 : itemCount > 0 ? 2 : 1;
 
     return (
-        <div className="manager-layout" style={{ maxWidth: '600px', margin: '0 auto', padding: '20px' }}>
-            <header>
-                <h1>Smart Shopper | Hello {user.name}</h1>
-            </header>
+        <>
+            <div className="app-bg-grid" />
+            <div className="app-shell">
+                <nav className="topbar" aria-label={en.nav.primary}>
+                    <div className="brand">
+                        <span className="brand-logo" aria-hidden="true">🛒</span>
+                        <span>{en.appName}</span>
+                        <span className="brand-badge">{en.brandBadge}</span>
+                    </div>
+                    <div className="topbar-user">
+                        <div className="user-chip">
+                            <span className="user-avatar" aria-hidden="true">{initials}</span>
+                            <span className="uname">{user.name}</span>
+                        </div>
+                        <button className="btn-ghost" onClick={handleLogout}>{en.nav.signOut}</button>
+                    </div>
+                </nav>
 
-            <ShoppingActions userId={user.id} onPathCalculated={handlePathResult} />
-            <ShoppingListPage userId={user.id} />
+                <header className="hero">
+                    <span className="hero-pill">
+                        <span className="dot" aria-hidden="true" /> {en.hero.pill}
+                    </span>
+                    <h1>
+                        {en.hero.title}{' '}
+                        <span className="gradient-text">{en.hero.titleAccent}</span>
+                    </h1>
+                    <p>{en.hero.subtitle}</p>
 
-            {pathResult.list.length > 0 && (
-                <div className="results-container" style={{ marginTop: '30px' }}>
-                    <h2>The shortest route to your shopping:</h2>
+                    <ol className="stepper" aria-label={en.progress}>
+                        <li className={`step ${step === 1 ? 'active' : ''}`} aria-current={step === 1 ? 'step' : undefined}>
+                            <span className="num" aria-hidden="true">1</span> {en.hero.step1}
+                        </li>
+                        <li className="step-sep" aria-hidden="true">→</li>
+                        <li className={`step ${step === 2 ? 'active' : ''}`} aria-current={step === 2 ? 'step' : undefined}>
+                            <span className="num" aria-hidden="true">2</span> {en.hero.step2}
+                        </li>
+                        <li className="step-sep" aria-hidden="true">→</li>
+                        <li className={`step ${step === 3 ? 'active' : ''}`} aria-current={step === 3 ? 'step' : undefined}>
+                            <span className="num" aria-hidden="true">3</span> {en.hero.step3}
+                        </li>
+                    </ol>
+                </header>
 
-                    {pathResult.aiSummary && (
-                        <p className="ai-box" style={{ background: '#f0f7ff', padding: '10px', borderRadius: '8px' }}>
-                            {pathResult.aiSummary}
-                        </p>
-                    )}
+                <ShoppingActions
+                    userId={user.id}
+                    notify={notify}
+                    onPathCalculated={handlePathResult}
+                    onListChanged={refreshShoppingList}
+                    onSessionExpired={() => {
+                        handleLogout();
+                        notify(en.toast.sessionExpired, 'error');
+                    }}
+                />
 
-                    <ul className="path-list" style={{ listStyle: 'none', padding: 0 }}>
-                        {pathResult.list.map((item, i) => (
-                            <li
-                                key={i}
-                                style={{
-                                    borderBottom: '2px solid #f0f0f0',
-                                    padding: '15px 10px',
-                                    marginBottom: '10px',
-                                    backgroundColor: '#fff',
-                                    borderRadius: '8px',
-                                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
-                                }}
-                            >
-                                <div style={{ fontWeight: 'bold', fontSize: '1.2rem', color: '#333' }}>
-                                    {i + 1}. {item.item_name}
-                                </div>
+                <ShoppingListPage
+                    userId={user.id}
+                    refreshKey={listRefreshKey}
+                    notify={notify}
+                    onItemsLoaded={setItemCount}
+                />
 
-                                {/* 🔧 FIXED LTR INSTRUCTIONS CONTAINER */}
+                {hasRoute && (
+                    <section className="glass-card" ref={routeRef} aria-labelledby="route-heading" tabIndex={-1}>
+                        <h2 className="card-title" id="route-heading">
+                            {en.route.title}
+                        </h2>
+                        <p className="card-sub">{en.route.subtitle}</p>
+
+                        {pathResult.mappingWarning && (
+                            <div className="banner banner-warn" role="alert">
+                                <span>{pathResult.mappingWarning}</span>
+                            </div>
+                        )}
+
+                        <StoreMap routeItems={pathResult.list} />
+
+                        <div>
+                            {pathResult.list.map((item, i) => (
                                 <div
-                                    style={{
-                                        marginTop: '8px',
-                                        display: 'flex',
-                                        flexWrap: 'wrap',
-                                        alignItems: 'center',
-                                        justifyContent: 'flex-start', // ⭐
-                                        gap: '8px',
-                                        color: '#555',
-                                        backgroundColor: '#fafafa',
-                                        padding: '8px',
-                                        borderRadius: '5px',
-                                        direction: 'ltr',             // ⭐
-                                        textAlign: 'left'             // ⭐
-                                    }}
+                                    className="route-stop"
+                                    key={item.id ?? i}
+                                    style={{ animationDelay: `${i * 0.05}s` }}
                                 >
-                                    <span style={{ fontSize: '0.9rem', fontWeight: '600' }}>
-                                        Instructions:
-                                    </span>
+                                    <div className="route-num">{i + 1}</div>
+                                    <div className="route-info">
+                                        <div className="route-name">{item.item_name}</div>
+                                        {item.categoryName && (
+                                            <div className="route-cat">{item.categoryName}</div>
+                                        )}
+                                        {item.aisle && (
+                                            <span className="route-aisle">
+                                                📦 {en.route.aisle} {item.aisle.col} · {en.route.shelf} {item.aisle.row}
+                                            </span>
+                                        )}
 
-                                    {item.fullPath && item.fullPath.length > 0 ? (
-                                        <div
-                                            style={{
-                                                display: 'flex',
-                                                flexWrap: 'wrap',
-                                                alignItems: 'center',
-                                                gap: '6px',
-                                                direction: 'ltr',
-                                                whiteSpace: 'nowrap'     // ⭐
-                                            }}
-                                        >
-                                            {item.fullPath.map((step, idx) => (
-                                                <span key={idx} style={{ fontSize: '1.3rem' }}>
-                                                    {step}
-                                                    {idx < item.fullPath.length - 1 && (
-                                                        <span style={{ margin: '0 6px', opacity: 0.4 }}>➔</span>
-                                                    )}
-                                                </span>
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <span>📍 You are already here</span>
-                                    )}
+                                        {!item.mapped ? (
+                                            <p className="route-status">{en.route.notMapped}</p>
+                                        ) : item.fullPath && item.fullPath.length > 0 ? (
+                                            <div className="route-steps">
+                                                <span className="label">{en.route.directions}</span>
+                                                {item.fullPath.map((stepIcon, idx) => (
+                                                    <span key={idx}>
+                                                        {stepIcon}
+                                                        {idx < item.fullPath.length - 1 && (
+                                                            <span className="sep"> ➔ </span>
+                                                        )}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        ) : i === 0 ? (
+                                            <p className="route-status">{en.route.atEntrance}</p>
+                                        ) : (
+                                            <p className="route-status">{en.route.sameAisle}</p>
+                                        )}
+                                    </div>
                                 </div>
-                            </li>
-                        ))}
-                    </ul>
+                            ))}
+                        </div>
+                    </section>
+                )}
+            </div>
+
+            <ToastStack toasts={toasts} />
+        </>
+    );
+};
+
+const ToastStack = ({ toasts }) => {
+    const icon = { ok: '✅', error: '⚠️', info: 'ℹ️' };
+    return (
+        <div className="toast-stack" role="status" aria-live="polite" aria-atomic="false">
+            {toasts.map((t) => (
+                <div className={`toast ${t.type}`} key={t.id}>
+                    <span className="ic" aria-hidden="true">{icon[t.type] || 'ℹ️'}</span>
+                    <span>{t.message}</span>
                 </div>
-            )}
+            ))}
         </div>
     );
 };

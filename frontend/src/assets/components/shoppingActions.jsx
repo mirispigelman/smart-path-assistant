@@ -1,49 +1,80 @@
 import React, { useState } from 'react';
-import { addItemManual, uploadFileAndCalculate, calculatePath, addVoiceItemsAI } from '../services/api.js';
+import { addItemManual, uploadFileToList, calculatePath, addVoiceItemsAI } from '../services/api.js';
+import en, { translateApiMessage } from '../../i18n/en.js';
 
-const ShoppingActions = ({ userId, onPathCalculated }) => {
+const ShoppingActions = ({ userId, onPathCalculated, onListChanged, onSessionExpired, notify }) => {
     const [textItem, setTextItem] = useState('');
     const [isWorking, setIsWorking] = useState(false);
     const [isListening, setIsListening] = useState(false);
 
+    const toast = (msg, type = 'info') => (notify ? notify(msg, type) : null);
+
+    const handleApiResponse = (data) => {
+        if (data?.code === 'INVALID_USER') {
+            onSessionExpired?.();
+            return true;
+        }
+        if (data?.code === 'GEMINI_QUOTA') {
+            toast(
+                translateApiMessage(data.error) || en.toast.geminiQuota,
+                'error'
+            );
+            return true;
+        }
+        return false;
+    };
+
     const handleManual = async () => {
-        if (!textItem) return;
+        if (!textItem.trim()) return;
         setIsWorking(true);
         try {
-            await addItemManual(userId, textItem);
+            await addItemManual(userId, textItem.trim());
+            toast(en.toast.itemAdded(textItem.trim()), 'ok');
             setTextItem('');
-            alert("Added to list!");
+            onListChanged?.();
         } catch (err) {
-            alert("Error adding product");
+            toast(en.toast.addFailed, 'error');
         } finally {
             setIsWorking(false);
         }
     };
 
     const handleFileUpload = async (e) => {
-        console.log("handleFileUpload");
         const file = e.target.files[0];
         if (!file) return;
         setIsWorking(true);
         try {
-            await uploadFileAndCalculate(userId, file);
-            alert("Products from file added successfully!");
+            const data = await uploadFileToList(userId, file);
+            if (handleApiResponse(data)) return;
+            onListChanged?.();
+            onPathCalculated?.([], '');
+            if (data?.items?.length > 0) {
+                toast(en.toast.fileAdded(data.items.join(', ')), 'ok');
+            } else if (data?.success) {
+                toast(
+                    translateApiMessage(data.message) || en.toast.noProductsInFile,
+                    'info'
+                );
+            } else {
+                toast(translateApiMessage(data?.error) || en.toast.fileError, 'error');
+            }
         } catch (err) {
-            alert("Error processing file");
+            toast(en.toast.fileError, 'error');
         } finally {
             setIsWorking(false);
+            e.target.value = '';
         }
     };
 
     const handleVoiceRecord = () => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
-            alert("Your browser does not support voice recognition.");
+            toast(en.toast.voiceUnsupported, 'error');
             return;
         }
 
         const recognition = new SpeechRecognition();
-        recognition.lang = 'en-US'; // Changed to English for consistency
+        recognition.lang = 'en-US';
         recognition.interimResults = false;
 
         recognition.onstart = () => setIsListening(true);
@@ -53,11 +84,15 @@ const ShoppingActions = ({ userId, onPathCalculated }) => {
             setIsWorking(true);
             try {
                 const data = await addVoiceItemsAI(userId, transcript);
-                if (data.success) {
-                    alert(`Recognized and added: ${data.items.join(', ')}`);
+                if (handleApiResponse(data)) return;
+                if (data.success && data.items?.length) {
+                    onListChanged?.();
+                    toast(en.toast.voiceAdded(data.items.join(', ')), 'ok');
+                } else {
+                    toast(en.toast.voiceEmpty, 'info');
                 }
             } catch (err) {
-                alert("Error in AI analysis");
+                toast(en.toast.voiceError, 'error');
             } finally {
                 setIsWorking(false);
             }
@@ -70,102 +105,128 @@ const ShoppingActions = ({ userId, onPathCalculated }) => {
     const handleStartShopping = async () => {
         setIsWorking(true);
         try {
-            const data = await calculatePath(userId); 
-            if (data && data.list) {
-                onPathCalculated(data.list, data.answer);
+            const data = await calculatePath(userId);
+            if (handleApiResponse(data)) return;
+            if (data?.list?.length > 0) {
+                onPathCalculated(
+                    data.list,
+                    data.answer || '',
+                    data.mappingWarning
+                );
+                toast(en.toast.routeReady, 'ok');
             } else {
-                alert("No products found to calculate path");
+                toast(
+                    translateApiMessage(data?.answer) ||
+                        translateApiMessage(data?.error) ||
+                        en.toast.routeEmpty,
+                    'info'
+                );
             }
         } catch (err) {
-            console.error(err);
-            alert("Error calculating path");
+            toast(en.toast.routeError, 'error');
         } finally {
             setIsWorking(false);
         }
     };
 
     const handleClearList = async () => {
-        if (!window.confirm("Are you sure you want to clear the entire list?")) return;
-        
+        if (!window.confirm(en.actions.confirmClear)) return;
         setIsWorking(true);
         try {
             const response = await fetch('http://localhost:5000/api/list/clear', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId })
+                body: JSON.stringify({ userId }),
             });
-            
             const data = await response.json();
             if (data.success) {
-                alert("List cleared successfully!");
-                if (onPathCalculated) onPathCalculated([], '');
+                toast(en.toast.listCleared, 'ok');
+                onPathCalculated?.([], '');
+                onListChanged?.();
             }
         } catch (err) {
-            console.error(err);
-            alert("Error clearing the list");
+            toast(en.toast.clearError, 'error');
         } finally {
             setIsWorking(false);
         }
     };
 
     return (
-        <div className="actions-card">
-            <div className="input-section">
-                <h3>✍️ Quick Add</h3>
-                <div style={{display: 'flex', gap: '8px'}}>
-                    <input type="text" value={textItem} onChange={e => setTextItem(e.target.value)} placeholder="Milk, Bread..." />
-                    <button className="add-btn" onClick={handleManual} disabled={isWorking}>Add</button>
+        <section className="glass-card" aria-labelledby="build-heading">
+            <h2 className="card-title" id="build-heading">
+                {en.actions.title}
+            </h2>
+            <p className="card-sub">{en.actions.subtitle}</p>
+
+            <div style={{ marginBottom: 20 }}>
+                <label className="field-label" htmlFor="quick-add">{en.actions.quickAdd}</label>
+                <div className="input-row">
+                    <input
+                        id="quick-add"
+                        className="field"
+                        type="text"
+                        value={textItem}
+                        onChange={(e) => setTextItem(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleManual()}
+                        placeholder={en.actions.placeholder}
+                        disabled={isWorking}
+                    />
+                    <button className="btn btn-primary" onClick={handleManual} disabled={isWorking || !textItem.trim()}>
+                        {en.actions.add}
+                    </button>
                 </div>
             </div>
 
-            <div className="input-section" style={{marginTop: '20px'}}>
-                <h3>📄 Upload List (PDF/Image)</h3>
-                <input type="file" className="file-input" onChange={handleFileUpload} accept="image/*,application/pdf" disabled={isWorking} />
+            <div className="action-grid">
+                <div className="action-tile">
+                    <h3><span aria-hidden="true">📄</span> {en.actions.uploadTitle}</h3>
+                    <p className="hint">{en.actions.uploadHint}</p>
+                    <label className="dropzone">
+                        <span className="big" aria-hidden="true">⬆️</span>
+                        <span>{isWorking ? en.actions.uploadProcessing : en.actions.uploadLabel}</span>
+                        <input
+                            type="file"
+                            onChange={handleFileUpload}
+                            accept="image/*,application/pdf"
+                            disabled={isWorking}
+                            aria-label={en.actions.uploadAria}
+                        />
+                    </label>
+                </div>
+
+                <div className="action-tile">
+                    <h3><span aria-hidden="true">🎤</span> {en.actions.voiceTitle}</h3>
+                    <p className="hint">{en.actions.voiceHint}</p>
+                    <button
+                        className={`voice-btn ${isListening ? 'listening' : ''}`}
+                        onClick={handleVoiceRecord}
+                        disabled={isWorking || isListening}
+                        aria-pressed={isListening}
+                    >
+                        {isListening ? en.actions.voiceListening : en.actions.voiceRecord}
+                    </button>
+                </div>
             </div>
 
-            <div className="input-section" style={{marginTop: '20px'}}>
-                <h3>🎤 Voice Record</h3>
-                <button 
-                    className={`voice-btn ${isListening ? 'listening' : ''}`} 
-                    onClick={handleVoiceRecord}
+            <hr className="divider" />
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <button
+                    className="btn btn-primary btn-lg btn-block"
+                    onClick={handleStartShopping}
                     disabled={isWorking || isListening}
-                    style={{
-                        width: '100%',
-                        padding: '12px',
-                        backgroundColor: isListening ? '#ff4d4d' : '#22a10896',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '12px',
-                        cursor: 'pointer'
-                    }}
                 >
-                    {isListening ? "👂 Listening..." : "🎤 Record Items"}
+                    {isWorking ? <span className="spinner" /> : en.actions.calculateRoute}
                 </button>
-            </div>
-
-            <hr style={{margin: '25px 0', opacity: '0.2'}} />
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <button className="calculate-btn" onClick={handleStartShopping} disabled={isWorking || isListening}>
-                    {isWorking ? "Processing..." : "🚀 Calculate Shortest Path"}
-                </button>
-
-                <button 
-                    onClick={handleClearList} 
+                <button
+                    className="btn btn-danger btn-block"
+                    onClick={handleClearList}
                     disabled={isWorking || isListening}
-                    style={{
-                        padding: '10px',
-                        backgroundColor: '#ff4d4d',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer'
-                    }}
                 >
-                    🗑️ Clear List
+                    {en.actions.clearList}
                 </button>
             </div>
-        </div>
+        </section>
     );
 };
 

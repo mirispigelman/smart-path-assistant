@@ -8,6 +8,7 @@ const upload = multer({ dest: 'uploads/' });
 
 // Auth
 router.post('/auth/login', shopCtrl.login);
+router.get('/auth/validate/:userId', shopCtrl.validateUser);
 
 // List Management
 router.post('/list/add-item', shopCtrl.addItem);

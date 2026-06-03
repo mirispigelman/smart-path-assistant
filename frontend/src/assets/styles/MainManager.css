@@ -104,12 +104,12 @@
     opacity: 0.5;
 }
 .shopping-section {
-  display: flex;         /* ✅ מציג לצדדים */
-  gap: 20px;             /* רווח בין הכרטיסים */
-  flex-wrap: wrap;       /* לשמור על רספונסיביות */
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
 }
 
 .shopping-section > * {
-  flex: 1;               /* כל כרטיס יקח חצי מסך במקביל */
+  flex: 1;
   min-width: 300px;
 }

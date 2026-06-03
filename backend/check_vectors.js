@@ -1,31 +1,64 @@
 import { getEmbedding } from './utils/geminiClient.js';
-import { findClosestCategory, pool } from './models/dbService.js';
+
+import { pool } from './db/db.js';
+
+import { findClosestCategory } from './models/dbService.js';
+
+
 
 async function checkMapping() {
-    console.log("--- בדיקת מיפוי מוצרים לקטגוריות (Semantic Search) ---");
+
+    console.log("--- Product-to-category mapping test (Semantic Search) ---");
+
+
 
     const testItems = [
-        "חלב 3%",
-        "לחם פרוס",
-        "עגבניה",
-        "שמפו לשיער",
-        "אקונומיקה",
-        "במבה אסם"
+
+        "milk 3%",
+
+        "sliced bread",
+
+        "tomato",
+
+        "hair shampoo",
+
+        "bleach",
+
+        "Bamba snack"
+
     ];
 
+
+
     for (const item of testItems) {
+
         try {
-            console.log(`\n🔍 בודק מוצר: "${item}"...`);
+
+            console.log(`\n🔍 Checking product: "${item}"...`);
+
             const vector = await getEmbedding(item);
-            // הפונקציה findClosestCategory כבר מדפיסה ללוג את שם הקטגוריה שנמצאה והמרחק
+
+            // findClosestCategory logs the matched category name and distance
+
             await findClosestCategory(vector);
+
         } catch (error) {
-            console.error(`❌ שגיאה בבדיקת ${item}:`, error.message);
+
+            console.error(`❌ Error checking ${item}:`, error.message);
+
         }
+
     }
 
-    console.log("\n--- סיום בדיקה ---");
-    pool.end(); // סגירת החיבור ל-DB בסיום
+
+
+    console.log("\n--- Test complete ---");
+
+    pool.end();
+
 }
 
+
+
 checkMapping();
+

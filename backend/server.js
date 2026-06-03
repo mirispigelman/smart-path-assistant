@@ -2,14 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import shoppingRoutes from './routes/shoppingRoutes.js';
-import { pool } from './db/db.js'; 
+import { pool } from './db/db.js';
+import { ensureCategoryEmbeddings } from './utils/init_embeddings.js'; 
 
-export const app = express(); // ייצוא ה-app לטובת הבדיקות
+export const app = express(); 
 app.use(cors());
 app.use(express.json());
 app.use('/api', shoppingRoutes);
 
-// בדיקת חיבור ל-DB
+// DB connection test
 app.get("/db-test", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM user_shopping_items where user_id=4");
@@ -22,9 +23,12 @@ app.get("/db-test", async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-// הפעלת השרת רק אם אנחנו לא במצב בדיקה
+// Start server only outside test mode
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    ensureCategoryEmbeddings().catch((err) =>
+      console.error('Category embeddings init failed:', err.message)
+    );
   });
 }
